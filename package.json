@@ -1,0 +1,13 @@
+{
+  "name": "mongoBackupApp",
+  "version": "1.0.0",
+  "description": "A simple application to backup MongoDB databases",
+  "main": "index.js",
+  "author": "kvnxp",
+  "license": "MIT",
+  "dependencies": {
+    "@types/node": "^24.1.0",
+    "dotenv": "^17.2.1",
+    "mongodb": "^6.18.0"
+  }
+}
