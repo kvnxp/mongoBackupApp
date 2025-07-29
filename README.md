@@ -51,24 +51,31 @@ src/
    # or
    bun install
    ```
-3. Create a `.env` file in the root directory and set your MongoDB connection string (example, do not use real credentials):
-   ```env
-   MONGO_URL=mongodb://exampleUser:examplePass@localhost:27017/exampledb
-   ```
+3. You do NOT need to create a `.env` file. The app will prompt you to add a MongoDB connection interactively on first run and save it to `db.json`.
 
 ### Usage
 
-#### Backup Collections
-Run the backup script to export collections:
+#### First Run & Connection Setup
+Start the app:
 ```sh
-npm run backup
+npm start
+# or
+bun run src/index.ts
 ```
+On first run, you will be prompted to create a MongoDB connection:
+- Enter a name for the connection
+- Enter the MongoDB connection URL
+- The app will test the connection and ask if you want to save it
+- Saved connections are stored in `db.json`
 
-#### Restore Collections
-Run the restore script to import collections:
-```sh
-npm run restore
-```
+#### Selecting a Connection
+On subsequent runs, the app will show a list of saved connections. Select one to use for backup/restore operations.
+
+#### Using the Menu
+After selecting a connection, the main menu will appear:
+- **1. Backup MongoDB**: Export collections to JSON files
+- **2. Restore MongoDB**: Import collections from JSON files
+- **0. Exit**: Quit the app
 
 > **Note:** All data in this repository and examples are for demonstration purposes only. Do not use real customer or sensitive data.
 
