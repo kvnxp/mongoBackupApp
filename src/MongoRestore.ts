@@ -5,6 +5,56 @@ import * as path from 'path';
 import * as readline from 'readline';
 
 export class MongoRestore {
+    // Deserialize extended JSON to MongoDB types
+    static deserializeMongoTypes(obj: any): any {
+        if (obj == null) return obj;
+        if (Array.isArray(obj)) return obj.map(MongoRestore.deserializeMongoTypes);
+        if (typeof obj === 'object') {
+            // ObjectId
+            if (obj.$oid) {
+                const { ObjectId } = require('mongodb');
+                return new ObjectId(obj.$oid);
+            }
+            // Date
+            if (obj.$date) {
+                return new Date(obj.$date);
+            }
+            // Decimal128
+            if (obj.$numberDecimal) {
+                const { Decimal128 } = require('mongodb');
+                return Decimal128.fromString(obj.$numberDecimal);
+            }
+            // Double
+            if (obj.$numberDouble) {
+                const { Double } = require('mongodb');
+                return new Double(obj.$numberDouble);
+            }
+            // Int32
+            if (obj.$numberInt) {
+                const { Int32 } = require('mongodb');
+                return new Int32(obj.$numberInt);
+            }
+            // Long
+            if (obj.$numberLong) {
+                const { Long } = require('mongodb');
+                return Long.fromString(obj.$numberLong);
+            }
+            // Timestamp
+            if (obj.$timestamp) {
+                const { Timestamp } = require('mongodb');
+                return new Timestamp(obj.$timestamp.t, obj.$timestamp.i);
+            }
+            // Recursively deserialize all properties
+            const result: any = {};
+            for (const key in obj) {
+                if (Object.prototype.hasOwnProperty.call(obj, key)) {
+                    result[key] = MongoRestore.deserializeMongoTypes(obj[key]);
+                }
+            }
+            return result;
+        }
+        return obj;
+    }
     static async restoreMongoInteractive(rl: readline.Interface) {
         const backupRoot = path.join(process.cwd(), 'backup');
         if (!fs.existsSync(backupRoot)) {
@@ -138,11 +188,13 @@ export class MongoRestore {
                 const filePath = path.join(dbPath, `${collectionName}.json`);
                 try {
                     const data = fs.readFileSync(filePath, 'utf8');
-                    const documents = JSON.parse(data);
+                    let documents = JSON.parse(data);
                     if (!Array.isArray(documents)) {
                         console.log(`File ${filePath} does not contain an array of documents.`);
                         continue;
                     }
+                    // Deserialize MongoDB types
+                    documents = MongoRestore.deserializeMongoTypes(documents);
                     const db = client.db(dbName);
                     const collection = db.collection(collectionName);
                     if (documents.length > 0) {

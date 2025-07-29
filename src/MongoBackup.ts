@@ -5,6 +5,51 @@ import * as path from 'path';
 import * as readline from 'readline';
 
 export class MongoBackup {
+    // Serialize MongoDB types to extended JSON
+    static serializeMongoTypes(obj: any): any {
+        if (obj == null) return obj;
+        if (Array.isArray(obj)) return obj.map(MongoBackup.serializeMongoTypes);
+        if (typeof obj === 'object') {
+            // ObjectId
+            if (obj._bsontype === 'ObjectID' || obj._bsontype === 'ObjectId') {
+                return { "$oid": obj.toHexString() };
+            }
+            // Date
+            if (obj instanceof Date) {
+                return { "$date": obj.toISOString() };
+            }
+            // Decimal128
+            if (obj._bsontype === 'Decimal128') {
+                return { "$numberDecimal": obj.toString() };
+            }
+            // Double
+            if (obj._bsontype === 'Double') {
+                return { "$numberDouble": obj.value };
+            }
+            // Int32
+            if (obj._bsontype === 'Int32') {
+                return { "$numberInt": obj.value };
+            }
+            // Long
+            if (obj._bsontype === 'Long') {
+                return { "$numberLong": obj.toString() };
+            }
+            // Timestamp
+            if (obj._bsontype === 'Timestamp') {
+                return { "$timestamp": { "t": obj.getHighBits(), "i": obj.getLowBits() } };
+            }
+            // Recursively serialize all properties
+            const result: any = {};
+            for (const key in obj) {
+                if (Object.prototype.hasOwnProperty.call(obj, key)) {
+                    result[key] = MongoBackup.serializeMongoTypes(obj[key]);
+                }
+            }
+            return result;
+        }
+        return obj;
+    }
+
     static async backupMongoInteractive(projectName: string, rl: readline.Interface) {
         console.log("Connecting to MongoDB...");
         const client = await mongoClient.connect();
@@ -132,8 +177,10 @@ export class MongoBackup {
                 try {
                     const collection = db.collection(collectionName);
                     const documents = await collection.find({}).toArray();
+                    // Serialize MongoDB types for backup
+                    const serializedDocs = MongoBackup.serializeMongoTypes(documents);
                     const backupFilePath = path.join(dbBackupDir, `${collectionName}.json`);
-                    fs.writeFileSync(backupFilePath, JSON.stringify(documents, null, 2));
+                    fs.writeFileSync(backupFilePath, JSON.stringify(serializedDocs, null, 2));
                     console.log(`    ✓ Backed up ${documents.length} documents to ${backupFilePath}`);
                 } catch (error) {
                     console.error(`    ✗ Error backing up collection ${collectionName}:`, error);
