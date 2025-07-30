@@ -1,5 +1,5 @@
 
-import { mongoClient } from './mongoConnection';
+import { getMongoClient } from './mongoConnection';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
@@ -55,7 +55,7 @@ export class MongoRestore {
         }
         return obj;
     }
-    static async restoreMongoInteractive(rl: readline.Interface) {
+    static async restoreMongoInteractive(rl: readline.Interface, mongoUrl: string) {
         const backupRoot = path.join(process.cwd(), 'backup');
         if (!fs.existsSync(backupRoot)) {
             console.log('No backup folder found.');
@@ -180,7 +180,7 @@ export class MongoRestore {
         }
         // Restore logic
         console.log('Connecting to MongoDB for restore...');
-        const client = await mongoClient.connect();
+        const client = await getMongoClient(mongoUrl).connect();
         let restored = false;
         for (const dbName of Object.keys(collectionsToRestore)) {
             const dbPath = path.join(restoreDir, dbName);

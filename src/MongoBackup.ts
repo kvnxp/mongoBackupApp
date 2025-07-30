@@ -1,5 +1,5 @@
 
-import { mongoClient } from './mongoConnection';
+import { getMongoClient } from './mongoConnection';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
@@ -50,9 +50,9 @@ export class MongoBackup {
         return obj;
     }
 
-    static async backupMongoInteractive(projectName: string, rl: readline.Interface) {
+    static async backupMongoInteractive(projectName: string, rl: readline.Interface, mongoUrl: string) {
         console.log("Connecting to MongoDB...");
-        const client = await mongoClient.connect();
+        const client = await getMongoClient(mongoUrl).connect();
         console.log("Reading databases...");
         var getdb = await client.db().admin().listDatabases();
 

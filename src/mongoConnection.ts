@@ -1,6 +1,9 @@
 import { MongoClient } from 'mongodb';
-import * as dotenv from 'dotenv';
-dotenv.config();
 
-const urlMongo = process.env.MONGO_URL;
-export const mongoClient = new MongoClient(urlMongo as string);
+/**
+ * Returns a MongoClient instance for the given MongoDB connection URL.
+ * @param urlMongo - The MongoDB connection string selected from the menu.
+ */
+export function getMongoClient(urlMongo: string): MongoClient {
+    return new MongoClient(urlMongo);
+}

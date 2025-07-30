@@ -4,7 +4,9 @@ import { MongoRestore } from './MongoRestore';
 
 export class MenuManager {
     private rl: readline.Interface;
-    constructor(rl: readline.Interface) {
+    mongoUrl: string;
+    constructor(mongoUrl: string, rl: readline.Interface) {
+        this.mongoUrl = mongoUrl;
         this.rl = rl;
     }
     showMenu() {
@@ -24,12 +26,12 @@ export class MenuManager {
                             this.mainMenu();
                             return;
                         }
-                        await MongoBackup.backupMongoInteractive(projectName.trim(), this.rl);
+                        await MongoBackup.backupMongoInteractive(projectName.trim(), this.rl, this.mongoUrl);
                         this.mainMenu();
                     });
                     break;
                 case '2':
-                    await MongoRestore.restoreMongoInteractive(this.rl);
+                    await MongoRestore.restoreMongoInteractive(this.rl, this.mongoUrl);
                     this.mainMenu();
                     break;
                 case '0':

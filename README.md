@@ -5,8 +5,9 @@ A Node.js application for backing up and restoring MongoDB databases. This app p
 ## Features
 - Backup MongoDB collections to JSON files
 - Restore collections from JSON files
-- Environment variable support for MongoDB connection
-- Organized backup structure by environment and collection
+- Interactive menu for selecting and saving MongoDB connections
+- No environment variables required; connection URLs are managed via the app menu
+- Organized backup structure by project, database, and collection
 
 ## Project Structure
 ```
@@ -51,7 +52,7 @@ src/
    # or
    bun install
    ```
-3. You do NOT need to create a `.env` file. The app will prompt you to add a MongoDB connection interactively on first run and save it to `db.json`.
+3. You do NOT need to create a `.env` file or set any environment variables. The app will prompt you to add a MongoDB connection interactively on first run and save it to `db.json`.
 
 ### Usage
 
@@ -69,7 +70,7 @@ On first run, you will be prompted to create a MongoDB connection:
 - Saved connections are stored in `db.json`
 
 #### Selecting a Connection
-On subsequent runs, the app will show a list of saved connections. Select one to use for backup/restore operations.
+On subsequent runs, the app will show a list of saved connections. Select one to use for backup/restore operations. The selected connection URL will be used for all database actions.
 
 #### Using the Menu
 After selecting a connection, the main menu will appear:

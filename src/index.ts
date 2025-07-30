@@ -102,8 +102,7 @@ async function startApp() {
         }
     }
     // You can set process.env.MONGO_URL or pass selectedConn.url to your connection logic here
-    process.env.MONGO_URL = selectedConn.url;
-    const menu = new MenuManager(rl);
+    const menu = new MenuManager(selectedConn.url, rl);
     menu.mainMenu();
 }
 
