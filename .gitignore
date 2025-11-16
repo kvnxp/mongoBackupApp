@@ -4,3 +4,5 @@ backup
 .vscode
 .env
 db.json
+mongoBackupCli
+build
