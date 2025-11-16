@@ -181,8 +181,16 @@ export class MongoRestore {
         // Restore logic
         console.log('Connecting to MongoDB for restore...');
         const client = await getMongoClient(mongoUrl).connect();
+        await client.db().admin().ping();
+        console.log('Connection successful.');
         let restored = false;
         for (const dbName of Object.keys(collectionsToRestore)) {
+            try {
+                await client.db().admin().ping();
+            } catch (error) {
+                console.error(`Connection lost before restoring ${dbName}:`, error);
+                continue;
+            }
             const dbPath = path.join(restoreDir, dbName);
             for (const collectionName of collectionsToRestore[dbName]) {
                 const filePath = path.join(dbPath, `${collectionName}.json`);
@@ -205,13 +213,13 @@ export class MongoRestore {
                     restored = true;
                 } catch (error) {
                     console.error(`✗ Error restoring ${dbName}.${collectionName}:`, error);
-    }
+                }
+            }
         }
         if (!restored) {
             console.log('No collections found to restore.');
         }
         await client.close();
         console.log('MongoDB connection closed.');
-    }
     }
 }

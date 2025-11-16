@@ -53,6 +53,8 @@ export class MongoBackup {
     static async backupMongoInteractive(projectName: string, dbName: string, rl: readline.Interface, mongoUrl: string) {
         console.log("Connecting to MongoDB...");
         const client = await getMongoClient(mongoUrl).connect();
+        await client.db().admin().ping();
+        console.log('Connection successful.');
         console.log(`Backing up database: ${dbName}`);
 
         const db = client.db(dbName);
@@ -113,6 +115,12 @@ export class MongoBackup {
         console.log(`Starting backup process for project: ${projectName}, database: ${dbName}`);
 
         for (const collectionName of collectionsToBackup) {
+            try {
+                await client.db().admin().ping();
+            } catch (error) {
+                console.error(`Connection lost before backing up ${collectionName}:`, error);
+                continue;
+            }
             console.log(`  Backing up collection: ${collectionName}`);
             try {
                 const collection = db.collection(collectionName);
@@ -131,4 +139,3 @@ export class MongoBackup {
         await client.close();
     }
 }
-
