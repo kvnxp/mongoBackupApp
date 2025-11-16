@@ -13,13 +13,17 @@ export class MenuManager {
     selectedDb: string;
     private conns: DbConnection[];
     private saveConns: (conns: DbConnection[]) => void;
+    private debugMode: boolean;
+    private workingDir: string;
 
-    constructor(mongoUrl: string, selectedDb: string, rl: readline.Interface, conns: DbConnection[], saveConns: (conns: DbConnection[]) => void) {
+    constructor(mongoUrl: string, selectedDb: string, rl: readline.Interface, conns: DbConnection[], saveConns: (conns: DbConnection[]) => void, debugMode: boolean = false, workingDir: string = process.cwd()) {
         this.mongoUrl = mongoUrl;
         this.selectedDb = selectedDb;
         this.rl = rl;
         this.conns = conns;
         this.saveConns = saveConns;
+        this.debugMode = debugMode;
+        this.workingDir = workingDir;
     }
     showMenu() {
         console.log("\n🔧 MongoBackupApp CLI Menu:");
@@ -38,12 +42,12 @@ export class MenuManager {
                             this.mainMenu();
                             return;
                         }
-                        await MongoBackup.backupMongoInteractive(projectName.trim(), this.selectedDb, this.rl, this.mongoUrl);
+                        await MongoBackup.backupMongoInteractive(projectName.trim(), this.mongoUrl, this.rl, this.debugMode, this.workingDir);
                         this.mainMenu();
                     });
                     break;
                 case 'r':
-                    await MongoRestore.restoreMongoInteractive(this.rl, this.mongoUrl);
+                    await MongoRestore.restoreMongoInteractive(this.rl, this.mongoUrl, this.selectedDb, this.debugMode, this.workingDir);
                     this.mainMenu();
                     break;
                 case 'x':
@@ -64,13 +68,13 @@ export class MenuManager {
                     resolve();
                     return;
                 }
-                await MongoBackup.backupMongoInteractive(projectName.trim(), this.selectedDb, this.rl, this.mongoUrl);
+                await MongoBackup.backupMongoInteractive(projectName.trim(), this.mongoUrl, this.rl, this.debugMode, this.workingDir);
                 resolve();
             });
         });
     }
 
     async doRestore() {
-        await MongoRestore.restoreMongoInteractive(this.rl, this.mongoUrl);
+        await MongoRestore.restoreMongoInteractive(this.rl, this.mongoUrl, this.selectedDb, this.debugMode, this.workingDir);
     }
 }

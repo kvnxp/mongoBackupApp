@@ -18,6 +18,18 @@ const rl = readline.createInterface({
 
 const dbDirPath = path.join(os.homedir(), '.mongobackupcli');
 const dbFilePath = path.join(dbDirPath, 'MBConfig.json');
+const debugMode = process.argv.includes('-D');
+
+function getWorkingDirectory(): string {
+    try {
+        const raw = fs.readFileSync(dbFilePath, 'utf-8');
+        const data = JSON.parse(raw);
+        if (data.config && data.config.workingDir && data.config.workingDir.trim()) {
+            return data.config.workingDir;
+        }
+    } catch {}
+    return process.cwd();
+}
 
 async function readDbConnections(): Promise<DbConnection[]> {
     if (!fs.existsSync(dbDirPath)) {
@@ -186,11 +198,20 @@ async function profilesMenu(conns: DbConnection[]): Promise<void> {
 }
 
 async function startApp() {
+    if (debugMode) {
+        console.log("\n📋 DEBUG MODE - Working Directories:");
+        console.log(`Config directory: ${dbDirPath}`);
+        console.log(`Config file: ${dbFilePath}`);
+        console.log(`Backup root: ${path.join(process.cwd(), 'backup')}`);
+        console.log(`Current working directory: ${process.cwd()}\n`);
+    }
+    
     let conns = await readDbConnections();
     let selectedConn: DbConnection | null = null;
-    let selectedDb: string | null = null;
+    
     while (true) {
-        if (!selectedConn || !selectedDb) {
+        if (!selectedConn) {
+            // Step 1: Select connection
             console.log("\n🔧 MongoBackupApp Initial Menu:");
             console.log("Available connections:");
             if (conns.length === 0) {
@@ -211,16 +232,7 @@ async function startApp() {
                 if (idx >= 0 && idx < conns.length) {
                     selectedConn = conns[idx];
                     console.log(`Connecting to ${selectedConn.name}...`);
-                    const databases = await listDatabases(selectedConn.url);
-                    if (databases.length === 0) {
-                        console.log('No databases available in this connection.');
-                        selectedConn = null;
-                    } else {
-                        selectedDb = await selectDatabase(databases);
-                        if (!selectedDb) {
-                            selectedConn = null;
-                        }
-                    }
+                    await listDatabases(selectedConn.url); // Test connection
                 } else {
                     console.log("Invalid connection number.");
                 }
@@ -228,22 +240,27 @@ async function startApp() {
                 console.log("Invalid option. Please try again.");
             }
         } else {
-            // Show CLI menu
+            // Step 2: Show action menu (Backup/Restore/Back/Exit)
             console.log("\n🔧 MongoBackupApp CLI Menu:");
-            console.log("b. 💾 Backup MongoDB");
+            console.log(`Conexión: ${selectedConn.name}`);
+            console.log("\nb. 💾 Backup MongoDB");
             console.log("r. 🔄 Restore MongoDB");
-            console.log("c. 🔙 Back to select menu");
+            console.log("c. 🔙 Back to select connection");
             console.log("x. 🚪 Exit");
             const choice = await ask("Select an option: ");
+            
             if (choice === 'b') {
-                const menu = new MenuManager(selectedConn.url, selectedDb, rl, conns, saveDbConnections);
+                // Backup flow - no need to select database here
+                const workingDir = getWorkingDirectory();
+                const menu = new MenuManager(selectedConn.url, '', rl, conns, saveDbConnections, debugMode, workingDir);
                 await menu.doBackup();
             } else if (choice === 'r') {
-                const menu = new MenuManager(selectedConn.url, selectedDb, rl, conns, saveDbConnections);
+                // Restore flow
+                const workingDir = getWorkingDirectory();
+                const menu = new MenuManager(selectedConn.url, '', rl, conns, saveDbConnections, debugMode, workingDir);
                 await menu.doRestore();
             } else if (choice === 'c') {
                 selectedConn = null;
-                selectedDb = null;
             } else if (choice === 'x') {
                 rl.close();
                 return;

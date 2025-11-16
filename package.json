@@ -5,6 +5,9 @@
   "main": "index.js",
   "author": "kvnxp",
   "license": "MIT",
+  "scripts": {
+    "build": "tsc"
+  },
   "dependencies": {
     "@types/node": "^24.1.0",
     "dotenv": "^17.2.1",

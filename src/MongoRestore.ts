@@ -55,8 +55,15 @@ export class MongoRestore {
         }
         return obj;
     }
-    static async restoreMongoInteractive(rl: readline.Interface, mongoUrl: string) {
-        const backupRoot = path.join(process.cwd(), 'backup');
+    static async restoreMongoInteractive(rl: readline.Interface, mongoUrl: string, selectedDbName: string, debugMode: boolean = false, workingDir: string = process.cwd()) {
+        if (debugMode) {
+            console.log("\n📋 DEBUG MODE - Restore Directories:");
+            console.log(`Working directory: ${workingDir}`);
+            console.log(`Backup root: ${path.join(workingDir, 'backup')}`);
+            console.log(`Selected database: ${selectedDbName}\n`);
+        }
+        
+        const backupRoot = path.join(workingDir, 'backup');
         if (!fs.existsSync(backupRoot)) {
             console.log('No backup folder found.');
             return;
@@ -97,20 +104,29 @@ export class MongoRestore {
             console.log('No databases found in this project.');
             return;
         }
-        console.log('Available databases:');
+        
+        if (debugMode) {
+            console.log(`📋 DEBUG MODE - Selected Project Directories:`);
+            console.log(`Project path: ${restoreDir}`);
+            console.log(`Available databases: ${dbFolders.join(', ')}\n`);
+        }
+        
+        console.log('Available databases in this backup:');
         dbFolders.forEach((db, idx) => {
             console.log(`${idx + 1}. ${db}`);
         });
         let dbsToRestore: string[] = [];
+        let restoreAllDatabases = false;
         while (dbsToRestore.length === 0) {
             await new Promise<void>((resolveDb) => {
-                rl.question("Enter database name(s) to restore (number, name, comma separated, or 'all'): ", (dbInput) => {
-                    const input = dbInput.trim();
-                    if (input.toLowerCase() === 'all') {
+                rl.question("Select database(s) (number, name, comma separated, or 'all'): ", (input) => {
+                    const val = input.trim();
+                    if (val.toLowerCase() === 'all') {
                         dbsToRestore = dbFolders;
+                        restoreAllDatabases = true;
                     } else {
                         let selected: string[] = [];
-                        const parts = input.split(',').map(s => s.trim()).filter(Boolean);
+                        const parts = val.split(',').map(s => s.trim()).filter(Boolean);
                         for (const part of parts) {
                             if (/^\d+$/.test(part)) {
                                 const idx = parseInt(part, 10) - 1;
@@ -129,71 +145,77 @@ export class MongoRestore {
                 });
             });
         }
-        let collectionsToRestore: {[db: string]: string[]} = {};
-        if (dbsToRestore.length === 1) {
-            const dbName = dbsToRestore[0];
-            const dbPath = path.join(restoreDir, dbName);
-            const colFiles = fs.readdirSync(dbPath).filter(f => f.endsWith('.json'));
-            const colList = colFiles.map(f => path.basename(f, '.json'));
-            if (colList.length === 0) {
-                console.log('No collections found in this database.');
-                return;
-            }
-            console.log(`Collections in database '${dbName}':`);
-            colList.forEach((col: string, idx: number) => {
-                console.log(`${idx + 1}. ${col}`);
-            });
-            while (!collectionsToRestore[dbName]) {
-                await new Promise<void>((resolveCol) => {
-                    rl.question("Enter collection name(s) to restore (number, name, comma separated, or 'all'): ", (colInput) => {
-                        const input = colInput.trim();
-                        if (input.toLowerCase() === 'all') {
-                            collectionsToRestore[dbName] = colList;
-                        } else {
-                            let selected: string[] = [];
-                            const parts = input.split(',').map(s => s.trim()).filter(Boolean);
-                            for (const part of parts) {
-                                if (/^\d+$/.test(part)) {
-                                    const idx = parseInt(part, 10) - 1;
-                                    if (colList[idx]) selected.push(colList[idx]);
-                                } else if (colList.includes(part)) {
-                                    selected.push(part);
-                                }
-                            }
-                            if (selected.length > 0) {
-                                collectionsToRestore[dbName] = Array.from(new Set(selected));
-                            } else {
-                                console.log('Invalid collection selection. Please try again.');
-                            }
-                        }
-                        resolveCol();
-                    });
-                });
-            }
-        } else {
-            // Multiple databases, restore all collections
-            dbsToRestore.forEach(dbName => {
-                const dbPath = path.join(restoreDir, dbName);
-                const colFiles = fs.readdirSync(dbPath).filter(f => f.endsWith('.json'));
-                collectionsToRestore[dbName] = colFiles.map(f => path.basename(f, '.json'));
-            });
-        }
+        
         // Restore logic
         console.log('Connecting to MongoDB for restore...');
         const client = await getMongoClient(mongoUrl).connect();
         await client.db().admin().ping();
-        console.log('Connection successful.');
+        console.log('Connection successful.\n');
+        
         let restored = false;
-        for (const dbName of Object.keys(collectionsToRestore)) {
-            try {
-                await client.db().admin().ping();
-            } catch (error) {
-                console.error(`Connection lost before restoring ${dbName}:`, error);
+        
+        for (const dbToRestore of dbsToRestore) {
+            const dbBackupDir = path.join(restoreDir, dbToRestore);
+            const collectionFiles = fs.readdirSync(dbBackupDir).filter(f => f.endsWith('.json'));
+            
+            if (collectionFiles.length === 0) {
+                console.log(`No collections found in database '${dbToRestore}'.`);
                 continue;
             }
-            const dbPath = path.join(restoreDir, dbName);
-            for (const collectionName of collectionsToRestore[dbName]) {
-                const filePath = path.join(dbPath, `${collectionName}.json`);
+            
+            const collectionList = collectionFiles.map(f => f.replace('.json', ''));
+            let collectionsToRestore: string[] = [];
+            
+            // Si se seleccionó 'all' en bases de datos, restaurar todas las colecciones automáticamente
+            if (restoreAllDatabases) {
+                collectionsToRestore = collectionList;
+                console.log(`Restoring all collections from database '${dbToRestore}'...`);
+            } else {
+                // Si se seleccionaron bases de datos específicas, preguntar qué colecciones
+                console.log(`\nCollections in database '${dbToRestore}':`);
+                collectionList.forEach((col, idx) => {
+                    console.log(`${idx + 1}. ${col}`);
+                });
+                
+                while (collectionsToRestore.length === 0) {
+                    await new Promise<void>((resolveCol) => {
+                        rl.question("Enter collection(s) to restore (number, name, comma separated, or 'all'): ", (colInput) => {
+                            const input = colInput.trim();
+                            if (input.toLowerCase() === 'all') {
+                                collectionsToRestore = collectionList;
+                            } else {
+                                let selected: string[] = [];
+                                const parts = input.split(',').map(s => s.trim()).filter(Boolean);
+                                for (const part of parts) {
+                                    if (/^\d+$/.test(part)) {
+                                        const idx = parseInt(part, 10) - 1;
+                                        if (collectionList[idx]) selected.push(collectionList[idx]);
+                                    } else if (collectionList.includes(part)) {
+                                        selected.push(part);
+                                    }
+                                }
+                                if (selected.length > 0) {
+                                    collectionsToRestore = Array.from(new Set(selected));
+                                } else {
+                                    console.log('Invalid collection selection. Please try again.');
+                                }
+                            }
+                            resolveCol();
+                        });
+                    });
+                }
+            }
+            
+            console.log(`Restore path: ${dbBackupDir}\n`);
+            
+            for (const collectionName of collectionsToRestore) {
+                try {
+                    await client.db().admin().ping();
+                } catch (error) {
+                    console.error(`Connection lost before restoring ${collectionName}:`, error);
+                    continue;
+                }
+                const filePath = path.join(dbBackupDir, `${collectionName}.json`);
                 try {
                     const data = fs.readFileSync(filePath, 'utf8');
                     let documents = JSON.parse(data);
@@ -203,19 +225,20 @@ export class MongoRestore {
                     }
                     // Deserialize MongoDB types
                     documents = MongoRestore.deserializeMongoTypes(documents);
-                    const db = client.db(dbName);
+                    const db = client.db(dbToRestore);
                     const collection = db.collection(collectionName);
                     if (documents.length > 0) {
                         await collection.deleteMany({});
                         await collection.insertMany(documents);
                     }
-                    console.log(`✓ Restored ${documents.length} documents to ${dbName}.${collectionName}`);
+                    console.log(`✓ Restored ${documents.length} documents to ${collectionName}`);
                     restored = true;
                 } catch (error) {
-                    console.error(`✗ Error restoring ${dbName}.${collectionName}:`, error);
+                    console.error(`✗ Error restoring ${collectionName}:`, error);
                 }
             }
         }
+        
         if (!restored) {
             console.log('No collections found to restore.');
         }
