@@ -7,29 +7,48 @@ import * as readline from 'readline';
 import { MenuManager } from './MenuManager';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import { MongoClient } from 'mongodb';
+import { getMongoClient } from './mongoConnection';
 
 const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout
 });
 
-const dbFilePath = path.join(__dirname, '../db.json');
-
+const dbDirPath = path.join(os.homedir(), '.mongobackupcli');
+const dbFilePath = path.join(dbDirPath, 'MBConfig.json');
 
 async function readDbConnections(): Promise<DbConnection[]> {
+    if (!fs.existsSync(dbDirPath)) {
+        fs.mkdirSync(dbDirPath, { recursive: true });
+    }
     if (!fs.existsSync(dbFilePath)) return [];
     const raw = fs.readFileSync(dbFilePath, 'utf-8');
     if (!raw.trim()) return [];
     try {
-        return JSON.parse(raw);
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.dbList && Array.isArray(parsed.dbList)) {
+            return parsed.dbList;
+        } else {
+            return [];
+        }
     } catch {
         return [];
     }
 }
 
 function saveDbConnections(conns: DbConnection[]): void {
-    fs.writeFileSync(dbFilePath, JSON.stringify(conns, null, 2));
+    let data: any = {};
+    if (fs.existsSync(dbFilePath)) {
+        try {
+            const raw = fs.readFileSync(dbFilePath, 'utf-8');
+            data = JSON.parse(raw);
+        } catch {}
+    }
+    data.dbList = conns;
+    if (!data.config) data.config = { workingDir: "" };
+    fs.writeFileSync(dbFilePath, JSON.stringify(data, null, 2));
 }
 
 async function testMongoConnection(url: string): Promise<boolean> {
@@ -85,25 +104,154 @@ async function selectDbConnection(conns: DbConnection[]): Promise<DbConnection |
     });
 }
 
-async function startApp() {
-    let conns = await readDbConnections();
-    let selectedConn = null;
-    while (!selectedConn) {
-        if (conns.length === 0) {
-            console.log('No database connections found. Please create one.');
+async function listDatabases(url: string): Promise<string[]> {
+    try {
+        const client = await getMongoClient(url).connect();
+        const adminDb = client.db().admin();
+        const dbList = await adminDb.listDatabases();
+        await client.close();
+        return dbList.databases
+            .map((db: any) => db.name)
+            .filter((name: string) => name !== 'admin' && name !== 'local' && name !== 'config');
+    } catch (error) {
+        console.error('Error listing databases:', error);
+        return [];
+    }
+}
+
+async function selectDatabase(databases: string[]): Promise<string | null> {
+    return new Promise((resolve) => {
+        console.log('Available databases:');
+        databases.forEach((db, i) => {
+            console.log(`${i + 1}. ${db}`);
+        });
+        rl.question('Select a database (number): ', (ans) => {
+            const idx = parseInt(ans.trim(), 10) - 1;
+            if (idx >= 0 && idx < databases.length) {
+                resolve(databases[idx]);
+            } else {
+                console.log('Invalid selection.');
+                resolve(null);
+            }
+        });
+    });
+}
+
+function ask(question: string): Promise<string> {
+    return new Promise((resolve) => {
+        rl.question(question, (answer) => resolve(answer.trim().toLowerCase()));
+    });
+}
+
+async function profilesMenu(conns: DbConnection[]): Promise<void> {
+    console.log("\n🔗 Profiles Operations:");
+    console.log("n. ➕ Add new connection");
+    console.log("d. 🗑️ Delete a connection");
+    console.log("t. 🧪 Test a connection");
+    console.log("b. 🔙 Back to initial menu");
+    const choice = await ask("Select an option: ");
+    switch (choice) {
+        case 'n':
             const newConn = await promptNewConnection();
             if (newConn) {
                 conns.push(newConn);
                 saveDbConnections(conns);
-                selectedConn = newConn;
+                conns = await readDbConnections(); // reload
+            }
+            break;
+        case 'd':
+            const connToDelete = await selectDbConnection(conns);
+            if (connToDelete) {
+                const index = conns.indexOf(connToDelete);
+                conns.splice(index, 1);
+                saveDbConnections(conns);
+                conns = await readDbConnections(); // reload
+                console.log('Connection deleted.');
+            }
+            break;
+        case 't':
+            const connToTest = await selectDbConnection(conns);
+            if (connToTest) {
+                process.stdout.write('Testing connection... ');
+                const ok = await testMongoConnection(connToTest.url);
+                console.log(ok ? 'Success!' : 'Failed.');
+            }
+            break;
+        case 'b':
+            return;
+        default:
+            console.log("Invalid option.");
+    }
+    await profilesMenu(conns); // recursive for submenu
+}
+
+async function startApp() {
+    let conns = await readDbConnections();
+    let selectedConn: DbConnection | null = null;
+    let selectedDb: string | null = null;
+    while (true) {
+        if (!selectedConn || !selectedDb) {
+            console.log("\n🔧 MongoBackupApp Initial Menu:");
+            console.log("Available connections:");
+            if (conns.length === 0) {
+                console.log("No connections configured.");
+            } else {
+                conns.forEach((c: DbConnection, i: number) => {
+                    console.log(`${i + 1}. ${c.name}`);
+                });
+            }
+            console.log("\np. 🔗 Profiles Operations");
+            console.log("Or enter the number of the connection to select it directly.");
+            const choice = await ask("Select an option or connection number: ");
+            if (choice === 'p') {
+                await profilesMenu(conns);
+                conns = await readDbConnections(); // reload in case changed
+            } else if (/^\d+$/.test(choice)) {
+                const idx = parseInt(choice, 10) - 1;
+                if (idx >= 0 && idx < conns.length) {
+                    selectedConn = conns[idx];
+                    console.log(`Connecting to ${selectedConn.name}...`);
+                    const databases = await listDatabases(selectedConn.url);
+                    if (databases.length === 0) {
+                        console.log('No databases available in this connection.');
+                        selectedConn = null;
+                    } else {
+                        selectedDb = await selectDatabase(databases);
+                        if (!selectedDb) {
+                            selectedConn = null;
+                        }
+                    }
+                } else {
+                    console.log("Invalid connection number.");
+                }
+            } else {
+                console.log("Invalid option. Please try again.");
             }
         } else {
-            selectedConn = await selectDbConnection(conns);
+            // Show CLI menu
+            console.log("\n🔧 MongoBackupApp CLI Menu:");
+            console.log("b. 💾 Backup MongoDB");
+            console.log("r. 🔄 Restore MongoDB");
+            console.log("c. 🔙 Back to select menu");
+            console.log("x. 🚪 Exit");
+            const choice = await ask("Select an option: ");
+            if (choice === 'b') {
+                const menu = new MenuManager(selectedConn.url, selectedDb, rl, conns, saveDbConnections);
+                await menu.doBackup();
+            } else if (choice === 'r') {
+                const menu = new MenuManager(selectedConn.url, selectedDb, rl, conns, saveDbConnections);
+                await menu.doRestore();
+            } else if (choice === 'c') {
+                selectedConn = null;
+                selectedDb = null;
+            } else if (choice === 'x') {
+                rl.close();
+                return;
+            } else {
+                console.log("Invalid option. Please try again.");
+            }
         }
     }
-    // You can set process.env.MONGO_URL or pass selectedConn.url to your connection logic here
-    const menu = new MenuManager(selectedConn.url, rl);
-    menu.mainMenu();
 }
 
 startApp();
