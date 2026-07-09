@@ -6,7 +6,8 @@
   "author": "kvnxp",
   "license": "MIT",
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "dev": "bun src/index.ts"
   },
   "dependencies": {
     "@types/node": "^24.1.0",

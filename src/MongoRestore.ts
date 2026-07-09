@@ -68,7 +68,8 @@ export class MongoRestore {
             console.log('No backup folder found.');
             return;
         }
-        const projects = fs.readdirSync(backupRoot).filter(f => fs.statSync(path.join(backupRoot, f)).isDirectory());
+        let projects = fs.readdirSync(backupRoot).filter(f => fs.statSync(path.join(backupRoot, f)).isDirectory());
+        projects.sort(); // Sort alphabetically
         if (projects.length === 0) {
             console.log('No backup projects found.');
             return;
@@ -100,6 +101,7 @@ export class MongoRestore {
         }
         const restoreDir = path.join(backupRoot, projectName);
         const dbFolders = fs.readdirSync(restoreDir).filter(f => fs.statSync(path.join(restoreDir, f)).isDirectory());
+        dbFolders.sort(); // Sort alphabetically
         if (dbFolders.length === 0) {
             console.log('No databases found in this project.');
             return;
@@ -157,6 +159,7 @@ export class MongoRestore {
         for (const dbToRestore of dbsToRestore) {
             const dbBackupDir = path.join(restoreDir, dbToRestore);
             const collectionFiles = fs.readdirSync(dbBackupDir).filter(f => f.endsWith('.json'));
+            collectionFiles.sort(); // Sort alphabetically
             
             if (collectionFiles.length === 0) {
                 console.log(`No collections found in database '${dbToRestore}'.`);
