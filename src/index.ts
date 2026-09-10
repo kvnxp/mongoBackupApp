@@ -10,6 +10,8 @@ import * as path from 'path';
 import * as os from 'os';
 import { MongoClient } from 'mongodb';
 import { getMongoClient } from './mongoConnection';
+import { MongoBackup } from './MongoBackup';
+import { MongoRestore } from './MongoRestore';
 import * as dotenv from 'dotenv';
 import { ZipArchive } from 'archiver';
 import * as tar from 'tar';
@@ -313,8 +315,9 @@ async function handleCliBackup(mongoUri: string, dbName: string, backupName: str
     for (const colName of colNames) {
         try {
             const docs = await db.collection(colName).find({}).toArray();
+            const serializedDocs = MongoBackup.serializeMongoTypes(docs);
             const filePath = path.join(backupPath, `${colName}.json`);
-            fs.writeFileSync(filePath, JSON.stringify(docs, null, 2));
+            fs.writeFileSync(filePath, JSON.stringify(serializedDocs, null, 2));
             console.log(`  ${colName}: ${docs.length} documents`);
         } catch (error) {
             console.error(`  ${colName}: error -`, error);
@@ -400,11 +403,12 @@ async function handleCliRestore(mongoUri: string, dbName: string, backupName: st
         const colName = file.replace('.json', '');
         try {
             const data = fs.readFileSync(path.join(restorePath, file), 'utf8');
-            const documents = JSON.parse(data);
+            let documents = JSON.parse(data);
             if (!Array.isArray(documents) || documents.length === 0) {
                 console.log(`  ${colName}: empty, skipping`);
                 continue;
             }
+            documents = MongoRestore.deserializeMongoTypes(documents);
             const collection = db.collection(colName);
             await collection.deleteMany({});
             await collection.insertMany(documents);
