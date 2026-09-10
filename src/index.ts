@@ -11,6 +11,8 @@ import * as os from 'os';
 import { MongoClient } from 'mongodb';
 import { getMongoClient } from './mongoConnection';
 import * as dotenv from 'dotenv';
+import { ZipArchive } from 'archiver';
+import * as tar from 'tar';
 
 dotenv.config();
 
@@ -158,12 +160,13 @@ function ask(question: string): Promise<string> {
     });
 }
 
-function parseCliArgs(): { action: 'backup' | 'restore' | 'help' | null; connection: string | null; database: string | null; backupName: string | null } {
+function parseCliArgs(): { action: 'backup' | 'restore' | 'help' | null; connection: string | null; database: string | null; backupName: string | null; compress: 'zip' | 'tar' | null } {
     const args = process.argv.slice(2);
     let action: 'backup' | 'restore' | 'help' | null = null;
     let connection: string | null = null;
     let database: string | null = null;
     let backupName: string | null = null;
+    let compress: 'zip' | 'tar' | null = null;
 
     for (let i = 0; i < args.length; i++) {
         switch (args[i]) {
@@ -184,10 +187,16 @@ function parseCliArgs(): { action: 'backup' | 'restore' | 'help' | null; connect
                 action = 'restore';
                 backupName = args[++i] || null;
                 break;
+            case '-zip':
+                compress = 'zip';
+                break;
+            case '-tar':
+                compress = 'tar';
+                break;
         }
     }
 
-    return { action, connection, database, backupName };
+    return { action, connection, database, backupName, compress };
 }
 
 function showCliHelp(): void {
@@ -201,18 +210,22 @@ Options:
   -c <connection>   Connection name from MBConfig.json (optional if MONGOURI is set)
   -d <database>     Database name to backup/restore (optional if DBNAME is set)
   -b <name>         Backup mode with given project name
-  -r <name>         Restore mode with given project name
+  -r <name>         Restore mode (detects .zip or .tar automatically)
+  -zip              Compress backup as .zip
+  -tar              Compress backup as .tar
   -h                Show this help message
 
 Examples:
-  mongobackupcli -c personal -d mydb -b backup-lunes
-  mongobackupcli -c personal -d mydb -r backup-lunes
-  mongobackupcli -b backup-lunes                    Uses MONGOURI and DBNAME from .env
-  mongobackupcli                                    Interactive menu
+  mongobackupcli -c personal -d mydb -b backup-lunes -zip
+  mongobackupcli -c personal -d mydb -b backup-lunes -tar
+  mongobackupcli -c personal -d mydb -r backup-lunes.zip
+  mongobackupcli -b backup-lunes -zip                    Uses MONGOURI and DBNAME from .env
+  mongobackupcli                                         Interactive menu
 
 Notes:
   - Connections are stored in ~/.mongobackupcli/MBConfig.json
   - Backups are stored in the directory defined by BACKUPDIR (default: ./backup)
+  - Restore auto-detects .zip or .tar from the filename
   - Running without flags opens the interactive menu
 `);
 }
@@ -238,7 +251,40 @@ function getEnvBackupDir(): string {
     return process.env.BACKUPDIR || path.join(process.cwd(), 'backup');
 }
 
-async function handleCliBackup(mongoUri: string, dbName: string, backupName: string): Promise<void> {
+async function compressZip(sourceDir: string, outputPath: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+        const output = fs.createWriteStream(outputPath);
+        const archive = new ZipArchive('zip', { zlib: { level: 9 } });
+
+        output.on('close', resolve);
+        archive.on('error', reject);
+
+        archive.pipe(output);
+        archive.directory(sourceDir, path.basename(sourceDir));
+        archive.finalize();
+    });
+}
+
+async function compressTar(sourceDir: string, outputPath: string): Promise<void> {
+    await tar.create(
+        { file: outputPath, cwd: path.dirname(sourceDir), gzip: false },
+        [path.basename(sourceDir)]
+    );
+}
+
+async function extractArchive(archivePath: string, destDir: string): Promise<void> {
+    if (archivePath.endsWith('.zip')) {
+        const { default: extractZip } = await import('extract-zip');
+        await extractZip(archivePath, { dir: destDir });
+    } else if (archivePath.endsWith('.tar')) {
+        await tar.extract({ file: archivePath, cwd: destDir });
+    } else {
+        console.error('Error: Unsupported archive format. Use .zip or .tar');
+        process.exit(1);
+    }
+}
+
+async function handleCliBackup(mongoUri: string, dbName: string, backupName: string, compress: 'zip' | 'tar' | null): Promise<void> {
     const backupDir = getEnvBackupDir();
     const backupPath = path.join(backupDir, backupName, dbName);
 
@@ -276,15 +322,57 @@ async function handleCliBackup(mongoUri: string, dbName: string, backupName: str
     }
 
     await client.close();
+
+    if (compress) {
+        const backupFolder = path.join(backupDir, backupName);
+        const ext = compress === 'zip' ? '.zip' : '.tar';
+        const archivePath = path.join(backupDir, `${backupName}${ext}`);
+
+        console.log(`\nCompressing to ${archivePath}...`);
+        if (compress === 'zip') {
+            await compressZip(backupFolder, archivePath);
+        } else {
+            await compressTar(backupFolder, archivePath);
+        }
+
+        fs.rmSync(backupFolder, { recursive: true, force: true });
+        console.log('Compression completed.');
+    }
+
     console.log('\nBackup completed.');
 }
 
 async function handleCliRestore(mongoUri: string, dbName: string, backupName: string): Promise<void> {
     const backupDir = getEnvBackupDir();
-    const restorePath = path.join(backupDir, backupName, dbName);
+    let restorePath = path.join(backupDir, backupName, dbName);
+    let tempExtracted = false;
+
+    const isArchive = backupName.endsWith('.zip') || backupName.endsWith('.tar');
+
+    if (isArchive) {
+        const archivePath = path.join(backupDir, backupName);
+        if (!fs.existsSync(archivePath)) {
+            console.error(`Error: Archive '${archivePath}' not found`);
+            process.exit(1);
+        }
+
+        const extractDir = path.join(backupDir, backupName.replace(/\.(zip|tar)$/, ''));
+        if (!fs.existsSync(extractDir)) {
+            fs.mkdirSync(extractDir, { recursive: true });
+        }
+
+        console.log(`Extracting ${archivePath}...`);
+        await extractArchive(archivePath, extractDir);
+        tempExtracted = true;
+        // Archives contain the project folder, so path is extractDir/<projectName>/<dbName>
+        restorePath = path.join(extractDir, path.basename(extractDir), dbName);
+    }
 
     if (!fs.existsSync(restorePath)) {
         console.error(`Error: Backup '${backupName}/${dbName}' not found in ${backupDir}`);
+        if (tempExtracted) {
+            fs.rmSync(path.join(backupDir, backupName.replace(/\.(zip|tar)$/, '')), { recursive: true, force: true });
+        }
         process.exit(1);
     }
 
@@ -292,6 +380,9 @@ async function handleCliRestore(mongoUri: string, dbName: string, backupName: st
 
     if (collectionFiles.length === 0) {
         console.log(`No collections found in backup '${backupName}/${dbName}'.`);
+        if (tempExtracted) {
+            fs.rmSync(path.join(backupDir, backupName.replace(/\.(zip|tar)$/, '')), { recursive: true, force: true });
+        }
         return;
     }
 
@@ -324,6 +415,13 @@ async function handleCliRestore(mongoUri: string, dbName: string, backupName: st
     }
 
     await client.close();
+
+    if (tempExtracted) {
+        const extractDir = path.join(backupDir, backupName.replace(/\.(zip|tar)$/, ''));
+        fs.rmSync(extractDir, { recursive: true, force: true });
+        console.log('\nCleaned up extracted files.');
+    }
+
     console.log('\nRestore completed.');
 }
 
@@ -370,7 +468,7 @@ async function profilesMenu(conns: DbConnection[]): Promise<void> {
 }
 
 async function startApp() {
-    const { action, connection, database, backupName } = parseCliArgs();
+    const { action, connection, database, backupName, compress } = parseCliArgs();
 
     if (action === 'help') {
         showCliHelp();
@@ -409,7 +507,7 @@ async function startApp() {
         }
 
         if (action === 'backup') {
-            await handleCliBackup(mongoUri, dbName, backupName);
+            await handleCliBackup(mongoUri, dbName, backupName, compress);
         } else {
             await handleCliRestore(mongoUri, dbName, backupName);
         }

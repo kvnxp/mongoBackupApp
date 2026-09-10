@@ -8,6 +8,8 @@ A Node.js application for backing up and restoring MongoDB databases. This app p
 - Interactive menu for selecting and managing MongoDB connections
 - Connection profiles management (add, delete, test connections)
 - CLI mode for quick backup/restore operations
+- Compress backups as `.zip` or `.tar`
+- Auto-detect archive format on restore
 - Two connection modes: profiles from MBConfig.json or `.env` variables
 - Cross-platform support (Windows, Linux, macOS)
 - Organized backup structure by project, database, and collection
@@ -96,20 +98,27 @@ Using a connection from MBConfig.json:
 mongobackupcli -c <connection> -d <database> -b <backup-name>
 ```
 
+Compress the backup:
+```sh
+mongobackupcli -c <connection> -d <database> -b <backup-name> -zip
+mongobackupcli -c <connection> -d <database> -b <backup-name> -tar
+```
+
 Using `.env` variables:
 ```sh
-mongobackupcli -b <backup-name>
+mongobackupcli -b <backup-name> -zip
 ```
 
 #### Restore
-Using a connection from MBConfig.json:
+Auto-detects `.zip` or `.tar` from the filename:
 ```sh
-mongobackupcli -c <connection> -d <database> -r <backup-name>
+mongobackupcli -c <connection> -d <database> -r <backup-name>.zip
+mongobackupcli -c <connection> -d <database> -r <backup-name>.tar
 ```
 
 Using `.env` variables:
 ```sh
-mongobackupcli -r <backup-name>
+mongobackupcli -r <backup-name>.zip
 ```
 
 #### CLI Options
@@ -118,7 +127,9 @@ mongobackupcli -r <backup-name>
 | `-c` | Connection name from MBConfig.json | Yes, unless `MONGOURI` is set in `.env` |
 | `-d` | Database name | Yes, unless `DBNAME` is set in `.env` |
 | `-b` | Backup mode with project name | One of `-b` or `-r` required |
-| `-r` | Restore mode with project name | One of `-b` or `-r` required |
+| `-r` | Restore mode (auto-detects archive format) | One of `-b` or `-r` required |
+| `-zip` | Compress backup as `.zip` | Optional (backup only) |
+| `-tar` | Compress backup as `.tar` | Optional (backup only) |
 | `-h` | Show help message | No |
 
 #### Examples
@@ -126,14 +137,20 @@ mongobackupcli -r <backup-name>
 # Backup using MBConfig.json connection
 mongobackupcli -c personal -d mydb -b backup-lunes
 
+# Backup with zip compression
+mongobackupcli -c personal -d mydb -b backup-lunes -zip
+
+# Backup with tar compression
+mongobackupcli -c personal -d mydb -b backup-lunes -tar
+
 # Backup using .env
-mongobackupcli -b backup-lunes
+mongobackupcli -b backup-lunes -zip
 
-# Restore using MBConfig.json connection
-mongobackupcli -c personal -d mydb -r backup-lunes
+# Restore from zip (auto-detected)
+mongobackupcli -c personal -d mydb -r backup-lunes.zip
 
-# Restore using .env
-mongobackupcli -r backup-lunes
+# Restore from tar (auto-detected)
+mongobackupcli -c personal -d mydb -r backup-lunes.tar
 ```
 
 ## Configuration
@@ -166,6 +183,13 @@ BACKUPDIR/
   <backup-name>/
     <database>/
       <collection>.json
+```
+
+Compressed archives:
+```
+BACKUPDIR/
+  <backup-name>.zip
+  <backup-name>.tar
 ```
 
 > **Note:** All data in this repository and examples are for demonstration purposes only. Do not use real customer or sensitive data.

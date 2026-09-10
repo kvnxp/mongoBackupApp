@@ -15,7 +15,14 @@
   },
   "dependencies": {
     "@types/node": "^24.1.0",
+    "archiver": "^8.0.0",
     "dotenv": "^17.2.1",
-    "mongodb": "^6.18.0"
+    "extract-zip": "^2.0.1",
+    "mongodb": "^6.18.0",
+    "tar": "^7.5.22"
+  },
+  "devDependencies": {
+    "@types/archiver": "^8.0.0",
+    "@types/tar": "^7.0.87"
   }
 }
