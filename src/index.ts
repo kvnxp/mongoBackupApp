@@ -158,35 +158,89 @@ function ask(question: string): Promise<string> {
     });
 }
 
-function getCliArgs(): { flag: string | null; name: string | null } {
+function parseCliArgs(): { action: 'backup' | 'restore' | 'help' | null; connection: string | null; database: string | null; backupName: string | null } {
     const args = process.argv.slice(2);
-    if (args.length >= 2) {
-        return { flag: args[0], name: args[1] };
+    let action: 'backup' | 'restore' | 'help' | null = null;
+    let connection: string | null = null;
+    let database: string | null = null;
+    let backupName: string | null = null;
+
+    for (let i = 0; i < args.length; i++) {
+        switch (args[i]) {
+            case '-h':
+                action = 'help';
+                break;
+            case '-c':
+                connection = args[++i] || null;
+                break;
+            case '-d':
+                database = args[++i] || null;
+                break;
+            case '-b':
+                action = 'backup';
+                backupName = args[++i] || null;
+                break;
+            case '-r':
+                action = 'restore';
+                backupName = args[++i] || null;
+                break;
+        }
     }
-    return { flag: null, name: null };
+
+    return { action, connection, database, backupName };
+}
+
+function showCliHelp(): void {
+    console.log(`
+MongoBackupCli - MongoDB Backup & Restore Tool
+
+Usage:
+  mongobackupcli [options]
+
+Options:
+  -c <connection>   Connection name from MBConfig.json (optional if MONGOURI is set)
+  -d <database>     Database name to backup/restore (optional if DBNAME is set)
+  -b <name>         Backup mode with given project name
+  -r <name>         Restore mode with given project name
+  -h                Show this help message
+
+Examples:
+  mongobackupcli -c personal -d mydb -b backup-lunes
+  mongobackupcli -c personal -d mydb -r backup-lunes
+  mongobackupcli -b backup-lunes                    Uses MONGOURI and DBNAME from .env
+  mongobackupcli                                    Interactive menu
+
+Notes:
+  - Connections are stored in ~/.mongobackupcli/MBConfig.json
+  - Backups are stored in the directory defined by BACKUPDIR (default: ./backup)
+  - Running without flags opens the interactive menu
+`);
+}
+
+function findConnectionByName(name: string): DbConnection | null {
+    const conns = readDbConnectionsSync();
+    return conns.find(c => c.name.toLowerCase() === name.toLowerCase()) || null;
+}
+
+function readDbConnectionsSync(): DbConnection[] {
+    if (!fs.existsSync(dbFilePath)) return [];
+    const raw = fs.readFileSync(dbFilePath, 'utf-8');
+    if (!raw.trim()) return [];
+    try {
+        const parsed = JSON.parse(raw);
+        return parsed?.dbList && Array.isArray(parsed.dbList) ? parsed.dbList : [];
+    } catch {
+        return [];
+    }
 }
 
 function getEnvBackupDir(): string {
     return process.env.BACKUPDIR || path.join(process.cwd(), 'backup');
 }
 
-function getEnvMongoUri(): string | null {
-    return process.env.MONGOURI || null;
-}
-
-function getEnvDbName(): string | null {
-    return process.env.DBNAME || null;
-}
-
-async function handleCliBackup(name: string): Promise<void> {
-    const mongoUri = getEnvMongoUri();
-    if (!mongoUri) {
-        console.error('Error: MONGOURI not set in .env');
-        process.exit(1);
-    }
-
+async function handleCliBackup(mongoUri: string, dbName: string, backupName: string): Promise<void> {
     const backupDir = getEnvBackupDir();
-    const backupPath = path.join(backupDir, name);
+    const backupPath = path.join(backupDir, backupName, dbName);
 
     if (!fs.existsSync(backupPath)) {
         fs.mkdirSync(backupPath, { recursive: true });
@@ -197,45 +251,27 @@ async function handleCliBackup(name: string): Promise<void> {
     await client.db().admin().ping();
     console.log('Connection successful.\n');
 
-    const adminDb = client.db().admin();
-    const dbList = await adminDb.listDatabases();
-    const databases = dbList.databases
-        .map((db: any) => db.name)
-        .filter((n: string) => n !== 'admin' && n !== 'local' && n !== 'config');
+    const db = client.db(dbName);
+    const collections = await db.listCollections().toArray();
+    const colNames = collections.map((c: any) => c.name);
 
-    if (databases.length === 0) {
-        console.log('No databases available.');
+    if (colNames.length === 0) {
+        console.log(`Database '${dbName}' has no collections.`);
         await client.close();
         return;
     }
 
-    console.log(`Backing up ${databases.length} database(s) to ${backupPath}\n`);
+    console.log(`Backing up database '${dbName}' to ${backupPath}`);
+    console.log(`  ${colNames.length} collection(s) found\n`);
 
-    for (const dbName of databases) {
-        const dbBackupDir = path.join(backupPath, dbName);
-        if (!fs.existsSync(dbBackupDir)) {
-            fs.mkdirSync(dbBackupDir, { recursive: true });
-        }
-
-        const db = client.db(dbName);
-        const collections = await db.listCollections().toArray();
-        const colNames = collections.map((c: any) => c.name);
-
-        if (colNames.length === 0) {
-            console.log(`  ${dbName}: no collections, skipping`);
-            continue;
-        }
-
-        console.log(`  ${dbName}: backing up ${colNames.length} collection(s)`);
-        for (const colName of colNames) {
-            try {
-                const docs = await db.collection(colName).find({}).toArray();
-                const filePath = path.join(dbBackupDir, `${colName}.json`);
-                fs.writeFileSync(filePath, JSON.stringify(docs, null, 2));
-                console.log(`    ${colName}: ${docs.length} documents`);
-            } catch (error) {
-                console.error(`    ${colName}: error -`, error);
-            }
+    for (const colName of colNames) {
+        try {
+            const docs = await db.collection(colName).find({}).toArray();
+            const filePath = path.join(backupPath, `${colName}.json`);
+            fs.writeFileSync(filePath, JSON.stringify(docs, null, 2));
+            console.log(`  ${colName}: ${docs.length} documents`);
+        } catch (error) {
+            console.error(`  ${colName}: error -`, error);
         }
     }
 
@@ -243,27 +279,19 @@ async function handleCliBackup(name: string): Promise<void> {
     console.log('\nBackup completed.');
 }
 
-async function handleCliRestore(name: string): Promise<void> {
-    const mongoUri = getEnvMongoUri();
-    if (!mongoUri) {
-        console.error('Error: MONGOURI not set in .env');
-        process.exit(1);
-    }
-
+async function handleCliRestore(mongoUri: string, dbName: string, backupName: string): Promise<void> {
     const backupDir = getEnvBackupDir();
-    const restorePath = path.join(backupDir, name);
+    const restorePath = path.join(backupDir, backupName, dbName);
 
     if (!fs.existsSync(restorePath)) {
-        console.error(`Error: Backup '${name}' not found in ${backupDir}`);
+        console.error(`Error: Backup '${backupName}/${dbName}' not found in ${backupDir}`);
         process.exit(1);
     }
 
-    const dbFolders = fs.readdirSync(restorePath).filter(f =>
-        fs.statSync(path.join(restorePath, f)).isDirectory()
-    );
+    const collectionFiles = fs.readdirSync(restorePath).filter(f => f.endsWith('.json'));
 
-    if (dbFolders.length === 0) {
-        console.log('No databases found in this backup.');
+    if (collectionFiles.length === 0) {
+        console.log(`No collections found in backup '${backupName}/${dbName}'.`);
         return;
     }
 
@@ -272,35 +300,26 @@ async function handleCliRestore(name: string): Promise<void> {
     await client.db().admin().ping();
     console.log('Connection successful.\n');
 
-    console.log(`Restoring from ${restorePath}\n`);
+    console.log(`Restoring database '${dbName}' from ${restorePath}`);
+    console.log(`  ${collectionFiles.length} collection(s) found\n`);
 
-    for (const dbName of dbFolders) {
-        const dbBackupDir = path.join(restorePath, dbName);
-        const collectionFiles = fs.readdirSync(dbBackupDir).filter(f => f.endsWith('.json'));
+    const db = client.db(dbName);
 
-        if (collectionFiles.length === 0) {
-            console.log(`  ${dbName}: no collections, skipping`);
-            continue;
-        }
-
-        console.log(`  ${dbName}: restoring ${collectionFiles.length} collection(s)`);
-        for (const file of collectionFiles) {
-            const colName = file.replace('.json', '');
-            try {
-                const data = fs.readFileSync(path.join(dbBackupDir, file), 'utf8');
-                const documents = JSON.parse(data);
-                if (!Array.isArray(documents) || documents.length === 0) {
-                    console.log(`    ${colName}: empty, skipping`);
-                    continue;
-                }
-                const db = client.db(dbName);
-                const collection = db.collection(colName);
-                await collection.deleteMany({});
-                await collection.insertMany(documents);
-                console.log(`    ${colName}: ${documents.length} documents`);
-            } catch (error) {
-                console.error(`    ${colName}: error -`, error);
+    for (const file of collectionFiles) {
+        const colName = file.replace('.json', '');
+        try {
+            const data = fs.readFileSync(path.join(restorePath, file), 'utf8');
+            const documents = JSON.parse(data);
+            if (!Array.isArray(documents) || documents.length === 0) {
+                console.log(`  ${colName}: empty, skipping`);
+                continue;
             }
+            const collection = db.collection(colName);
+            await collection.deleteMany({});
+            await collection.insertMany(documents);
+            console.log(`  ${colName}: ${documents.length} documents`);
+        } catch (error) {
+            console.error(`  ${colName}: error -`, error);
         }
     }
 
@@ -351,25 +370,60 @@ async function profilesMenu(conns: DbConnection[]): Promise<void> {
 }
 
 async function startApp() {
-    const { flag, name } = getCliArgs();
+    const { action, connection, database, backupName } = parseCliArgs();
 
-    if (flag === '-b' && name) {
-        await handleCliBackup(name);
+    if (action === 'help') {
+        showCliHelp();
         rl.close();
         return;
     }
 
-    if (flag === '-r' && name) {
-        await handleCliRestore(name);
+    // CLI mode: -b/-r <name> with connection from -c or MONGOURI env
+    if (action && backupName) {
+        let mongoUri: string | null = null;
+
+        if (connection) {
+            const conn = findConnectionByName(connection);
+            if (!conn) {
+                console.error(`Error: Connection '${connection}' not found in MBConfig.json`);
+                const conns = readDbConnectionsSync();
+                if (conns.length > 0) {
+                    console.log('Available connections:');
+                    conns.forEach(c => console.log(`  - ${c.name}`));
+                }
+                process.exit(1);
+            }
+            mongoUri = conn.url;
+        } else {
+            mongoUri = process.env.MONGOURI || null;
+            if (!mongoUri) {
+                console.error('Error: No connection specified. Use -c <connection> or set MONGOURI in .env');
+                process.exit(1);
+            }
+        }
+
+        const dbName = database || process.env.DBNAME || null;
+        if (!dbName) {
+            console.error('Error: No database specified. Use -d <database> or set DBNAME in .env');
+            process.exit(1);
+        }
+
+        if (action === 'backup') {
+            await handleCliBackup(mongoUri, dbName, backupName);
+        } else {
+            await handleCliRestore(mongoUri, dbName, backupName);
+        }
         rl.close();
         return;
     }
 
-    if (flag && flag !== '-D') {
-        console.log(`Usage:`);
-        console.log(`  mongobackupcli -b <name>   Backup all databases`);
-        console.log(`  mongobackupcli -r <name>   Restore a backup`);
-        console.log(`  mongobackupcli              Interactive menu`);
+    // Incomplete CLI flags — show usage
+    if (action || connection || database || backupName) {
+        console.log('Usage:');
+        console.log('  mongobackupcli -c <connection> -d <database> -b <name>   Backup');
+        console.log('  mongobackupcli -c <connection> -d <database> -r <name>   Restore');
+        console.log('  mongobackupcli -h                                        Show help');
+        console.log('  mongobackupcli                                           Interactive menu');
         rl.close();
         return;
     }
