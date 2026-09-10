@@ -7,7 +7,11 @@
   "license": "MIT",
   "scripts": {
     "build": "tsc",
-    "dev": "bun src/index.ts"
+    "dev": "bun src/index.ts",
+    "build:current": "bun build --compile --target=bun src/index.ts --outfile build/app-current",
+    "build:linux64": "bun build --compile --target=bun-linux-x64 src/index.ts --outfile build/app-linux-x64",
+    "build:linuxarm": "bun build --compile --target=bun-linux-arm64 src/index.ts --outfile build/app-linux-arm64",
+    "build:macos": "bun build --compile --target=bun-darwin-x64 src/index.ts --outfile build/app-macos-x64"
   },
   "dependencies": {
     "@types/node": "^24.1.0",
