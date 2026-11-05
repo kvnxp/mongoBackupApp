@@ -6,24 +6,30 @@
   "author": "kvnxp",
   "license": "MIT",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc --noEmit -p . && bun scripts/build.ts",
     "dev": "bun src/index.ts",
-    "build:current": "bun build --compile --target=bun src/index.ts --outfile build/app-current",
-    "build:linux64": "bun build --compile --target=bun-linux-x64 src/index.ts --outfile build/app-linux-x64",
-    "build:linuxarm": "bun build --compile --target=bun-linux-arm64 src/index.ts --outfile build/app-linux-arm64",
-    "build:macos": "bun build --compile --target=bun-darwin-x64 src/index.ts --outfile build/app-macos-x64",
-    "build:macosarm": "bun build --compile --target=bun-darwin-arm64 src/index.ts --outfile build/app-macos-arm64"
+    "test": "bun test",
+    "build:current": "bun scripts/build.ts bun build/app-current",
+    "build:linux64": "bun scripts/build.ts bun-linux-x64 build/app-linux-x64",
+    "build:linuxarm": "bun scripts/build.ts bun-linux-arm64 build/app-linux-arm64",
+    "build:macos": "bun scripts/build.ts bun-darwin-x64 build/app-macos-x64",
+    "build:macosarm": "bun scripts/build.ts bun-darwin-arm64 build/app-macos-arm64",
+    "typecheck": "tsc --noEmit -p ."
   },
   "dependencies": {
     "@types/node": "^24.1.0",
     "archiver": "^8.0.0",
     "dotenv": "^17.2.1",
     "extract-zip": "^2.0.1",
+    "ink": "^8.0.0",
     "mongodb": "^6.18.0",
+    "react": "^19.3.1",
     "tar": "^7.5.22"
   },
   "devDependencies": {
     "@types/archiver": "^8.0.0",
-    "@types/tar": "^7.0.87"
+    "@types/react": "^19.3.0",
+    "@types/tar": "^7.0.87",
+    "ink-testing-library": "^4.0.0"
   }
 }

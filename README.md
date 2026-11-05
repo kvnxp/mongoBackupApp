@@ -5,7 +5,8 @@ A Node.js application for backing up and restoring MongoDB databases. This app p
 ## Features
 - Backup MongoDB collections to JSON files
 - Restore collections from JSON files
-- Interactive menu for selecting and managing MongoDB connections
+- Full screen TUI (Ink) to manage connections, back up and restore with live progress
+- Copy selected collections directly to another server (saved or new connection)
 - Connection profiles management (add, delete, test connections)
 - CLI mode for quick backup/restore operations
 - Compress backups as `.zip` or `.tar`
@@ -26,19 +27,20 @@ backup/
       orders.json
       invoices.json
 src/
-  index.ts
-  MenuManager.ts
-  MongoBackup.ts
-  mongoConnection.ts
-  MongoRestore.ts
+  index.ts          entry: CLI flags or TUI
+  cli.ts            CLI mode
+  jobs.ts           backup/restore jobs shared by CLI and TUI
+  MongoBackup.ts    MongoRestore.ts  jsonArrayStream.ts  archive.ts  config.ts
+  tui/              Ink screens and components
+tests/
+docs/               architecture and structure
 .env.example
 ```
 
 ## Getting Started
 
 ### Prerequisites
-- Node.js (v18+ recommended)
-- npm or bun
+- [Bun](https://bun.sh) 1.2+
 - MongoDB instance
 
 ### Installation
@@ -49,8 +51,6 @@ src/
    ```
 2. Install dependencies:
    ```sh
-   npm install
-   # or
    bun install
    ```
 3. (Optional) Create a `.env` file for CLI mode:
@@ -61,28 +61,37 @@ src/
 
 ## Usage
 
-### Interactive Mode
-Start the app without arguments to enter the interactive menu:
+### Interactive Mode (TUI)
+Start the app without arguments in a terminal to open the full screen TUI:
 ```sh
-bun run src/index.ts
+bun run dev
+# or the compiled binary
+./build/app-current
 ```
 
-#### Initial Menu
-- **Connection list**: Choose from saved connections by number
-- **p. Profiles Operations**: Manage connection profiles
+```
+ MongoBackupApp  ›  Backup · select collections                 ● production
+╭ Databases ──────────── 2/3 ╮╭ Collections · shop ─────────────────── 1/3 ╮
+│   [ ] blog         1.2 MB  ││ ❯ [x] orders                   12,300 docs │
+│ ❯ [-] shop          48 MB  ││   [ ] products                    800 docs │
+│   [ ] stats        320 KB  ││   [x] users                     5,000 docs │
+╰────────────────────────────╯╰────────────────────────────────────────────╯
+ 2 collection(s) in 1 database(s) selected · ~17,300 docs
+ ↑↓ move  tab/←→ switch pane  space toggle  a toggle all  enter continue  esc back
+```
 
-#### Profiles Operations
-From the initial menu, select `p` to access:
-- **n. Add new connection**: Create and test a new MongoDB connection
-- **d. Delete a connection**: Remove an existing connection profile
-- **t. Test a connection**: Verify connectivity to a saved connection
-- **b. Back to initial menu**: Return to main menu
+Screens:
+- **Connections**: pick a saved connection (`enter`), add (`n`), test (`t`) or delete (`d`) one. Passwords are shown masked.
+- **Home**: server version and size, backup root, and the actions Backup (`b`), Restore (`r`), Change connection (`c`), Quit (`q`).
+- **Backup**: select databases and collections in two panes (document counts are shown), then choose the destination:
+  - **Files**: a name and a format (folder, `.zip` or `.tar`).
+  - **Another server**: pick a saved connection or create a new one, review which collections already exist there (they will be replaced) and confirm. Collections are copied directly between servers with their types, indexes and collection options; each one is swapped in only after it was fully copied.
+- **Restore**: pick a backup folder or archive (newest first), select databases and collections, and confirm. Each collection is replaced only after its whole file was imported.
+- **Progress**: live progress per collection, documents per second, and a summary at the end. `esc` or `Ctrl+C` asks to cancel; finished collections are kept and the current one is discarded.
 
-#### Main Menu (after selecting connection)
-- **b. Backup MongoDB**: Export collections to JSON files
-- **r. Restore MongoDB**: Import collections from JSON files
-- **c. Back to select connection**: Return to connection list
-- **x. Exit**: Quit the app
+Keys: `↑↓`/`j k` move, `PgUp/PgDn`, `g/G` first/last, `space` toggle, `a` toggle all, `tab` switch pane or field, `enter` confirm, `esc` back, `Ctrl+C` cancel a running job or quit.
+
+The TUI needs an interactive terminal. When stdin/stdout are not a TTY, use the CLI flags.
 
 ### CLI Mode
 Run backup/restore operations directly from the command line.
