@@ -8,10 +8,10 @@ import { MenuManager } from './MenuManager';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { MongoClient } from 'mongodb';
 import { getMongoClient } from './mongoConnection';
 import { MongoBackup } from './MongoBackup';
 import { MongoRestore } from './MongoRestore';
+import { errorMessage, question } from './selection';
 import * as dotenv from 'dotenv';
 import { ZipArchive } from 'archiver';
 import * as tar from 'tar';
@@ -27,139 +27,93 @@ const dbDirPath = path.join(os.homedir(), '.mongobackupcli');
 const dbFilePath = path.join(dbDirPath, 'MBConfig.json');
 const debugMode = process.argv.includes('-D');
 
-function getWorkingDirectory(): string {
+function readConfigFile(): any {
     try {
         const raw = fs.readFileSync(dbFilePath, 'utf-8');
-        const data = JSON.parse(raw);
-        if (data.config && data.config.workingDir && data.config.workingDir.trim()) {
-            return data.config.workingDir;
-        }
-    } catch {}
-    return process.cwd();
+        return raw.trim() ? JSON.parse(raw) : {};
+    } catch {
+        return {};
+    }
 }
 
-async function readDbConnections(): Promise<DbConnection[]> {
-    if (!fs.existsSync(dbDirPath)) {
-        fs.mkdirSync(dbDirPath, { recursive: true });
+function getWorkingDirectory(): string {
+    const workingDir = readConfigFile()?.config?.workingDir;
+    return typeof workingDir === 'string' && workingDir.trim() ? workingDir : process.cwd();
+}
+
+/**
+ * Backup root shared by CLI and interactive modes:
+ * BACKUPDIR env var > <config.workingDir>/backup > <cwd>/backup
+ */
+function getBackupRoot(): string {
+    if (process.env.BACKUPDIR && process.env.BACKUPDIR.trim()) {
+        return path.resolve(process.env.BACKUPDIR);
     }
-    if (!fs.existsSync(dbFilePath)) return [];
-    const raw = fs.readFileSync(dbFilePath, 'utf-8');
-    if (!raw.trim()) return [];
-    try {
-        const parsed = JSON.parse(raw);
-        if (parsed && parsed.dbList && Array.isArray(parsed.dbList)) {
-            return parsed.dbList;
-        } else {
-            return [];
-        }
-    } catch {
-        return [];
-    }
+    return path.join(getWorkingDirectory(), 'backup');
+}
+
+function readDbConnections(): DbConnection[] {
+    const parsed = readConfigFile();
+    return Array.isArray(parsed?.dbList) ? parsed.dbList : [];
 }
 
 function saveDbConnections(conns: DbConnection[]): void {
-    let data: any = {};
-    if (fs.existsSync(dbFilePath)) {
-        try {
-            const raw = fs.readFileSync(dbFilePath, 'utf-8');
-            data = JSON.parse(raw);
-        } catch {}
-    }
+    fs.mkdirSync(dbDirPath, { recursive: true, mode: 0o700 });
+    const data = readConfigFile();
     data.dbList = conns;
     if (!data.config) data.config = { workingDir: "" };
-    fs.writeFileSync(dbFilePath, JSON.stringify(data, null, 2));
+    // The file stores connection URLs with credentials: keep it readable by the owner only
+    fs.writeFileSync(dbFilePath, JSON.stringify(data, null, 2), { mode: 0o600 });
+    fs.chmodSync(dbFilePath, 0o600);
 }
 
 async function testMongoConnection(url: string): Promise<boolean> {
+    const client = getMongoClient(url);
     try {
-        const client = new MongoClient(url);
         await client.connect();
-        await client.close();
+        await client.db().admin().ping();
         return true;
     } catch {
         return false;
+    } finally {
+        await client.close().catch(() => {});
     }
 }
 
 async function promptNewConnection(): Promise<DbConnection | null> {
-    return new Promise((resolve) => {
-        rl.question('Enter connection name: ', (name) => {
-            rl.question('Enter MongoDB connection URL: ', async (url) => {
-                process.stdout.write('Testing connection... ');
-                const ok = await testMongoConnection(url);
-                if (ok) {
-                    console.log('Success!');
-                    rl.question('Save this connection? (1: Save, 2: Cancel): ', (ans) => {
-                        if (ans.trim() === '1') {
-                            resolve({ name, url });
-                        } else {
-                            resolve(null);
-                        }
-                    });
-                } else {
-                    console.log('Failed to connect. Try again.');
-                    resolve(null);
-                }
-            });
-        });
-    });
+    const name = (await question(rl, 'Enter connection name: ')).trim();
+    const url = (await question(rl, 'Enter MongoDB connection URL: ')).trim();
+    if (!name || !url) {
+        console.log('Name and URL are required.');
+        return null;
+    }
+    process.stdout.write('Testing connection... ');
+    if (!(await testMongoConnection(url))) {
+        console.log('Failed to connect. Try again.');
+        return null;
+    }
+    console.log('Success!');
+    const ans = await question(rl, 'Save this connection? (1: Save, 2: Cancel): ');
+    return ans.trim() === '1' ? { name, url } : null;
 }
 
 async function selectDbConnection(conns: DbConnection[]): Promise<DbConnection | null> {
-    return new Promise((resolve) => {
-        console.log('Select a database connection:');
-        conns.forEach((c: DbConnection, i: number) => {
-            console.log(`${i + 1}. ${c.name} `);
-        });
-        rl.question('Enter number: ', (ans) => {
-            const idx = parseInt(ans.trim(), 10) - 1;
-            if (idx >= 0 && idx < conns.length) {
-                resolve(conns[idx]);
-            } else {
-                console.log('Invalid selection.');
-                resolve(null);
-            }
-        });
-    });
-}
-
-async function listDatabases(url: string): Promise<string[]> {
-    try {
-        const client = await getMongoClient(url).connect();
-        const adminDb = client.db().admin();
-        const dbList = await adminDb.listDatabases();
-        await client.close();
-        return dbList.databases
-            .map((db: any) => db.name)
-            .filter((name: string) => name !== 'admin' && name !== 'local' && name !== 'config');
-    } catch (error) {
-        console.error('Error listing databases:', error);
-        return [];
+    if (conns.length === 0) {
+        console.log('No connections configured.');
+        return null;
     }
+    console.log('Select a database connection:');
+    conns.forEach((c, i) => console.log(`${i + 1}. ${c.name}`));
+    const idx = parseInt((await question(rl, 'Enter number: ')).trim(), 10) - 1;
+    if (idx >= 0 && idx < conns.length) {
+        return conns[idx];
+    }
+    console.log('Invalid selection.');
+    return null;
 }
 
-async function selectDatabase(databases: string[]): Promise<string | null> {
-    return new Promise((resolve) => {
-        console.log('Available databases:');
-        databases.forEach((db, i) => {
-            console.log(`${i + 1}. ${db}`);
-        });
-        rl.question('Select a database (number): ', (ans) => {
-            const idx = parseInt(ans.trim(), 10) - 1;
-            if (idx >= 0 && idx < databases.length) {
-                resolve(databases[idx]);
-            } else {
-                console.log('Invalid selection.');
-                resolve(null);
-            }
-        });
-    });
-}
-
-function ask(question: string): Promise<string> {
-    return new Promise((resolve) => {
-        rl.question(question, (answer) => resolve(answer.trim().toLowerCase()));
-    });
+async function ask(prompt: string): Promise<string> {
+    return (await question(rl, prompt)).trim().toLowerCase();
 }
 
 function parseCliArgs(): { action: 'backup' | 'restore' | 'help' | null; connection: string | null; database: string | null; backupName: string | null; compress: 'zip' | 'tar' | null } {
@@ -171,23 +125,32 @@ function parseCliArgs(): { action: 'backup' | 'restore' | 'help' | null; connect
     let compress: 'zip' | 'tar' | null = null;
 
     for (let i = 0; i < args.length; i++) {
+        // Value of the current flag; another flag (e.g. "-b -zip") is not taken as a value
+        const value = (): string | null => {
+            const next = args[i + 1];
+            if (next !== undefined && !next.startsWith('-')) {
+                i++;
+                return next;
+            }
+            return null;
+        };
         switch (args[i]) {
             case '-h':
                 action = 'help';
                 break;
             case '-c':
-                connection = args[++i] || null;
+                connection = value();
                 break;
             case '-d':
-                database = args[++i] || null;
+                database = value();
                 break;
             case '-b':
                 action = 'backup';
-                backupName = args[++i] || null;
+                backupName = value();
                 break;
             case '-r':
                 action = 'restore';
-                backupName = args[++i] || null;
+                backupName = value();
                 break;
             case '-zip':
                 compress = 'zip';
@@ -214,7 +177,8 @@ Options:
   -b <name>         Backup mode with given project name
   -r <name>         Restore mode (detects .zip or .tar automatically)
   -zip              Compress backup as .zip
-  -tar              Compress backup as .tar
+  -tar              Package backup as .tar (uncompressed)
+  -D                Debug mode (prints resolved directories)
   -h                Show this help message
 
 Examples:
@@ -226,39 +190,24 @@ Examples:
 
 Notes:
   - Connections are stored in ~/.mongobackupcli/MBConfig.json
-  - Backups are stored in the directory defined by BACKUPDIR (default: ./backup)
+  - Backup root: BACKUPDIR, else <config.workingDir>/backup, else ./backup
   - Restore auto-detects .zip or .tar from the filename
+  - Restore replaces the target collections with the backup contents
   - Running without flags opens the interactive menu
 `);
 }
 
 function findConnectionByName(name: string): DbConnection | null {
-    const conns = readDbConnectionsSync();
-    return conns.find(c => c.name.toLowerCase() === name.toLowerCase()) || null;
-}
-
-function readDbConnectionsSync(): DbConnection[] {
-    if (!fs.existsSync(dbFilePath)) return [];
-    const raw = fs.readFileSync(dbFilePath, 'utf-8');
-    if (!raw.trim()) return [];
-    try {
-        const parsed = JSON.parse(raw);
-        return parsed?.dbList && Array.isArray(parsed.dbList) ? parsed.dbList : [];
-    } catch {
-        return [];
-    }
-}
-
-function getEnvBackupDir(): string {
-    return process.env.BACKUPDIR || path.join(process.cwd(), 'backup');
+    return readDbConnections().find(c => c.name.toLowerCase() === name.toLowerCase()) || null;
 }
 
 async function compressZip(sourceDir: string, outputPath: string): Promise<void> {
     return new Promise((resolve, reject) => {
         const output = fs.createWriteStream(outputPath);
-        const archive = new ZipArchive('zip', { zlib: { level: 9 } });
+        const archive = new ZipArchive({ zlib: { level: 9 } });
 
         output.on('close', resolve);
+        output.on('error', reject);
         archive.on('error', reject);
 
         archive.pipe(output);
@@ -281,55 +230,51 @@ async function extractArchive(archivePath: string, destDir: string): Promise<voi
     } else if (archivePath.endsWith('.tar')) {
         await tar.extract({ file: archivePath, cwd: destDir });
     } else {
-        console.error('Error: Unsupported archive format. Use .zip or .tar');
-        process.exit(1);
+        throw new Error('Unsupported archive format. Use .zip or .tar');
     }
 }
 
 async function handleCliBackup(mongoUri: string, dbName: string, backupName: string, compress: 'zip' | 'tar' | null): Promise<void> {
-    const backupDir = getEnvBackupDir();
-    const backupPath = path.join(backupDir, backupName, dbName);
+    const backupDir = getBackupRoot();
+    const backupFolder = path.join(backupDir, backupName);
+    const backupPath = path.join(backupFolder, dbName);
 
-    if (!fs.existsSync(backupPath)) {
-        fs.mkdirSync(backupPath, { recursive: true });
+    if (debugMode) {
+        console.log(`📋 DEBUG MODE - Backup root: ${backupDir}\n`);
     }
 
     console.log(`Connecting to MongoDB...`);
     const client = await getMongoClient(mongoUri).connect();
-    await client.db().admin().ping();
-    console.log('Connection successful.\n');
+    try {
+        await client.db().admin().ping();
+        console.log('Connection successful.\n');
 
-    const db = client.db(dbName);
-    const collections = await db.listCollections().toArray();
-    const colNames = collections.map((c: any) => c.name);
+        const db = client.db(dbName);
+        const colNames = await MongoBackup.listCollectionNames(db);
 
-    if (colNames.length === 0) {
-        console.log(`Database '${dbName}' has no collections.`);
-        await client.close();
-        return;
-    }
-
-    console.log(`Backing up database '${dbName}' to ${backupPath}`);
-    console.log(`  ${colNames.length} collection(s) found\n`);
-
-    for (const colName of colNames) {
-        try {
-            const docs = await db.collection(colName).find({}).toArray();
-            const serializedDocs = MongoBackup.serializeMongoTypes(docs);
-            const filePath = path.join(backupPath, `${colName}.json`);
-            fs.writeFileSync(filePath, JSON.stringify(serializedDocs, null, 2));
-            console.log(`  ${colName}: ${docs.length} documents`);
-        } catch (error) {
-            console.error(`  ${colName}: error -`, error);
+        if (colNames.length === 0) {
+            console.log(`Database '${dbName}' has no collections.`);
+            return;
         }
-    }
 
-    await client.close();
+        fs.mkdirSync(backupPath, { recursive: true });
+        console.log(`Backing up database '${dbName}' to ${backupPath}`);
+        console.log(`  ${colNames.length} collection(s) found\n`);
+
+        for (const colName of colNames) {
+            try {
+                const count = await MongoBackup.backupCollection(db, colName, backupPath);
+                console.log(`  ${colName}: ${count} documents`);
+            } catch (error) {
+                console.error(`  ${colName}: error - ${errorMessage(error)}`);
+            }
+        }
+    } finally {
+        await client.close();
+    }
 
     if (compress) {
-        const backupFolder = path.join(backupDir, backupName);
-        const ext = compress === 'zip' ? '.zip' : '.tar';
-        const archivePath = path.join(backupDir, `${backupName}${ext}`);
+        const archivePath = path.join(backupDir, `${backupName}.${compress}`);
 
         console.log(`\nCompressing to ${archivePath}...`);
         if (compress === 'zip') {
@@ -345,130 +290,114 @@ async function handleCliBackup(mongoUri: string, dbName: string, backupName: str
     console.log('\nBackup completed.');
 }
 
+/** Finds `<root>/<projectName>/<dbName>` in an extracted archive, tolerating renamed archives. */
+function findExtractedDbPath(extractRoot: string, projectName: string, dbName: string): string {
+    const expected = path.join(extractRoot, projectName, dbName);
+    if (fs.existsSync(expected)) return expected;
+    const dirs = fs.readdirSync(extractRoot).filter(f => fs.statSync(path.join(extractRoot, f)).isDirectory());
+    if (dirs.length === 1) return path.join(extractRoot, dirs[0], dbName);
+    return expected;
+}
+
 async function handleCliRestore(mongoUri: string, dbName: string, backupName: string): Promise<void> {
-    const backupDir = getEnvBackupDir();
+    const backupDir = getBackupRoot();
     let restorePath = path.join(backupDir, backupName, dbName);
-    let tempExtracted = false;
+    // Archives are extracted to a private temp dir, never inside the backup root,
+    // so cleanup can never delete an existing uncompressed backup
+    let tempDir: string | null = null;
 
-    const isArchive = backupName.endsWith('.zip') || backupName.endsWith('.tar');
-
-    if (isArchive) {
-        const archivePath = path.join(backupDir, backupName);
-        if (!fs.existsSync(archivePath)) {
-            console.error(`Error: Archive '${archivePath}' not found`);
-            process.exit(1);
-        }
-
-        const extractDir = path.join(backupDir, backupName.replace(/\.(zip|tar)$/, ''));
-        if (!fs.existsSync(extractDir)) {
-            fs.mkdirSync(extractDir, { recursive: true });
-        }
-
-        console.log(`Extracting ${archivePath}...`);
-        await extractArchive(archivePath, extractDir);
-        tempExtracted = true;
-        // Archives contain the project folder, so path is extractDir/<projectName>/<dbName>
-        restorePath = path.join(extractDir, path.basename(extractDir), dbName);
-    }
-
-    if (!fs.existsSync(restorePath)) {
-        console.error(`Error: Backup '${backupName}/${dbName}' not found in ${backupDir}`);
-        if (tempExtracted) {
-            fs.rmSync(path.join(backupDir, backupName.replace(/\.(zip|tar)$/, '')), { recursive: true, force: true });
-        }
-        process.exit(1);
-    }
-
-    const collectionFiles = fs.readdirSync(restorePath).filter(f => f.endsWith('.json'));
-
-    if (collectionFiles.length === 0) {
-        console.log(`No collections found in backup '${backupName}/${dbName}'.`);
-        if (tempExtracted) {
-            fs.rmSync(path.join(backupDir, backupName.replace(/\.(zip|tar)$/, '')), { recursive: true, force: true });
-        }
-        return;
-    }
-
-    console.log(`Connecting to MongoDB for restore...`);
-    const client = await getMongoClient(mongoUri).connect();
-    await client.db().admin().ping();
-    console.log('Connection successful.\n');
-
-    console.log(`Restoring database '${dbName}' from ${restorePath}`);
-    console.log(`  ${collectionFiles.length} collection(s) found\n`);
-
-    const db = client.db(dbName);
-
-    for (const file of collectionFiles) {
-        const colName = file.replace('.json', '');
-        try {
-            const data = fs.readFileSync(path.join(restorePath, file), 'utf8');
-            let documents = JSON.parse(data);
-            if (!Array.isArray(documents) || documents.length === 0) {
-                console.log(`  ${colName}: empty, skipping`);
-                continue;
+    try {
+        if (/\.(zip|tar)$/.test(backupName)) {
+            const archivePath = path.resolve(backupDir, backupName);
+            if (!fs.existsSync(archivePath)) {
+                throw new Error(`Archive '${archivePath}' not found`);
             }
-            documents = MongoRestore.deserializeMongoTypes(documents);
-            const collection = db.collection(colName);
-            await collection.deleteMany({});
-            await collection.insertMany(documents);
-            console.log(`  ${colName}: ${documents.length} documents`);
-        } catch (error) {
-            console.error(`  ${colName}: error -`, error);
+            tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mongobackup-'));
+            console.log(`Extracting ${archivePath}...`);
+            await extractArchive(archivePath, tempDir);
+            restorePath = findExtractedDbPath(tempDir, path.basename(backupName).replace(/\.(zip|tar)$/, ''), dbName);
         }
-    }
 
-    await client.close();
+        if (!fs.existsSync(restorePath)) {
+            throw new Error(`Backup '${backupName}/${dbName}' not found in ${backupDir}`);
+        }
 
-    if (tempExtracted) {
-        const extractDir = path.join(backupDir, backupName.replace(/\.(zip|tar)$/, ''));
-        fs.rmSync(extractDir, { recursive: true, force: true });
-        console.log('\nCleaned up extracted files.');
+        const collections = MongoRestore.listBackupCollections(restorePath);
+        if (collections.length === 0) {
+            console.log(`No collections found in backup '${backupName}/${dbName}'.`);
+            return;
+        }
+
+        console.log(`Connecting to MongoDB for restore...`);
+        const client = await getMongoClient(mongoUri).connect();
+        try {
+            await client.db().admin().ping();
+            console.log('Connection successful.\n');
+
+            console.log(`Restoring database '${dbName}' from ${restorePath}`);
+            console.log(`  ${collections.length} collection(s) found\n`);
+
+            const db = client.db(dbName);
+            for (const colName of collections) {
+                try {
+                    const count = await MongoRestore.restoreCollection(db, colName, path.join(restorePath, `${colName}.json`));
+                    console.log(count === null ? `  ${colName}: empty, skipping` : `  ${colName}: ${count} documents`);
+                } catch (error) {
+                    console.error(`  ${colName}: error - ${errorMessage(error)}`);
+                }
+            }
+        } finally {
+            await client.close();
+        }
+    } finally {
+        if (tempDir) {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+            console.log('\nCleaned up extracted files.');
+        }
     }
 
     console.log('\nRestore completed.');
 }
 
-async function profilesMenu(conns: DbConnection[]): Promise<void> {
-    console.log("\n🔗 Profiles Operations:");
-    console.log("n. ➕ Add new connection");
-    console.log("d. 🗑️ Delete a connection");
-    console.log("t. 🧪 Test a connection");
-    console.log("b. 🔙 Back to initial menu");
-    const choice = await ask("Select an option: ");
-    switch (choice) {
-        case 'n':
-            const newConn = await promptNewConnection();
-            if (newConn) {
-                conns.push(newConn);
-                saveDbConnections(conns);
-                conns = await readDbConnections(); // reload
+async function profilesMenu(): Promise<void> {
+    while (true) {
+        const conns = readDbConnections();
+        console.log("\n🔗 Profiles Operations:");
+        console.log("n. ➕ Add new connection");
+        console.log("d. 🗑️ Delete a connection");
+        console.log("t. 🧪 Test a connection");
+        console.log("b. 🔙 Back to initial menu");
+        const choice = await ask("Select an option: ");
+        switch (choice) {
+            case 'n': {
+                const newConn = await promptNewConnection();
+                if (newConn) {
+                    saveDbConnections([...conns, newConn]);
+                }
+                break;
             }
-            break;
-        case 'd':
-            const connToDelete = await selectDbConnection(conns);
-            if (connToDelete) {
-                const index = conns.indexOf(connToDelete);
-                conns.splice(index, 1);
-                saveDbConnections(conns);
-                conns = await readDbConnections(); // reload
-                console.log('Connection deleted.');
+            case 'd': {
+                const connToDelete = await selectDbConnection(conns);
+                if (connToDelete) {
+                    saveDbConnections(conns.filter(c => c !== connToDelete));
+                    console.log('Connection deleted.');
+                }
+                break;
             }
-            break;
-        case 't':
-            const connToTest = await selectDbConnection(conns);
-            if (connToTest) {
-                process.stdout.write('Testing connection... ');
-                const ok = await testMongoConnection(connToTest.url);
-                console.log(ok ? 'Success!' : 'Failed.');
+            case 't': {
+                const connToTest = await selectDbConnection(conns);
+                if (connToTest) {
+                    process.stdout.write('Testing connection... ');
+                    console.log((await testMongoConnection(connToTest.url)) ? 'Success!' : 'Failed.');
+                }
+                break;
             }
-            break;
-        case 'b':
-            return;
-        default:
-            console.log("Invalid option.");
+            case 'b':
+                return;
+            default:
+                console.log("Invalid option.");
+        }
     }
-    await profilesMenu(conns); // recursive for submenu
 }
 
 async function startApp() {
@@ -488,7 +417,7 @@ async function startApp() {
             const conn = findConnectionByName(connection);
             if (!conn) {
                 console.error(`Error: Connection '${connection}' not found in MBConfig.json`);
-                const conns = readDbConnectionsSync();
+                const conns = readDbConnections();
                 if (conns.length > 0) {
                     console.log('Available connections:');
                     conns.forEach(c => console.log(`  - ${c.name}`));
@@ -533,13 +462,13 @@ async function startApp() {
         console.log("\n📋 DEBUG MODE - Working Directories:");
         console.log(`Config directory: ${dbDirPath}`);
         console.log(`Config file: ${dbFilePath}`);
-        console.log(`Backup root: ${path.join(process.cwd(), 'backup')}`);
+        console.log(`Backup root: ${getBackupRoot()}`);
         console.log(`Current working directory: ${process.cwd()}\n`);
     }
-    
-    let conns = await readDbConnections();
+
+    let conns = readDbConnections();
     let selectedConn: DbConnection | null = null;
-    
+
     while (true) {
         if (!selectedConn) {
             // Step 1: Select connection
@@ -553,17 +482,24 @@ async function startApp() {
                 });
             }
             console.log("\np. 🔗 Profiles Operations");
+            console.log("x. 🚪 Exit");
             console.log("Or enter the number of the connection to select it directly.");
             const choice = await ask("Select an option or connection number: ");
             if (choice === 'p') {
-                await profilesMenu(conns);
-                conns = await readDbConnections(); // reload in case changed
+                await profilesMenu();
+                conns = readDbConnections(); // reload in case changed
+            } else if (choice === 'x') {
+                rl.close();
+                return;
             } else if (/^\d+$/.test(choice)) {
                 const idx = parseInt(choice, 10) - 1;
                 if (idx >= 0 && idx < conns.length) {
-                    selectedConn = conns[idx];
-                    console.log(`Connecting to ${selectedConn.name}...`);
-                    await listDatabases(selectedConn.url); // Test connection
+                    console.log(`Connecting to ${conns[idx].name}...`);
+                    if (await testMongoConnection(conns[idx].url)) {
+                        selectedConn = conns[idx];
+                    } else {
+                        console.log('Failed to connect. Check the connection URL or server.');
+                    }
                 } else {
                     console.log("Invalid connection number.");
                 }
@@ -573,23 +509,20 @@ async function startApp() {
         } else {
             // Step 2: Show action menu (Backup/Restore/Back/Exit)
             console.log("\n🔧 MongoBackupApp CLI Menu:");
-            console.log(`Conexión: ${selectedConn.name}`);
+            console.log(`Connection: ${selectedConn.name}`);
             console.log("\nb. 💾 Backup MongoDB");
             console.log("r. 🔄 Restore MongoDB");
             console.log("c. 🔙 Back to select connection");
             console.log("x. 🚪 Exit");
             const choice = await ask("Select an option: ");
-            
-            if (choice === 'b') {
-                // Backup flow - no need to select database here
-                const workingDir = getWorkingDirectory();
-                const menu = new MenuManager(selectedConn.url, '', rl, conns, saveDbConnections, debugMode, workingDir);
-                await menu.doBackup();
-            } else if (choice === 'r') {
-                // Restore flow
-                const workingDir = getWorkingDirectory();
-                const menu = new MenuManager(selectedConn.url, '', rl, conns, saveDbConnections, debugMode, workingDir);
-                await menu.doRestore();
+
+            if (choice === 'b' || choice === 'r') {
+                const menu = new MenuManager(selectedConn.url, rl, debugMode, getBackupRoot());
+                if (choice === 'b') {
+                    await menu.doBackup();
+                } else {
+                    await menu.doRestore();
+                }
             } else if (choice === 'c') {
                 selectedConn = null;
             } else if (choice === 'x') {
@@ -602,4 +535,8 @@ async function startApp() {
     }
 }
 
-startApp();
+startApp().catch((error) => {
+    console.error('Error:', errorMessage(error));
+    rl.close();
+    process.exit(1);
+});
