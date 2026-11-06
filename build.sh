@@ -1,2 +1,1 @@
-bun  build --compile --bytecode src/index.ts
-mv index mongoBackupCli
+bun scripts/build.ts bun mongoBackupCli
